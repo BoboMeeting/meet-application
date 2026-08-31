@@ -28,6 +28,10 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
+# Some plugin sources contain non-ASCII characters (e.g. Chinese comments), and
+# the default Windows code page can be GBK; force UTF-8 to avoid C4819 warnings
+# being promoted to errors by /WX.
+add_compile_options(/utf-8)
 
 # Compilation settings that should be applied to most targets.
 function(APPLY_STANDARD_SETTINGS TARGET)

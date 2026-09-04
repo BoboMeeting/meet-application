@@ -8,6 +8,9 @@ class LKTextField extends StatelessWidget {
   final IconData? icon;
   final bool obscureText;
   final TextInputType? keyboardType;
+  final Widget? suffixIcon;
+  final TextInputAction? textInputAction;
+  final ValueChanged<String>? onSubmitted;
 
   const LKTextField({
     required this.label,
@@ -15,6 +18,9 @@ class LKTextField extends StatelessWidget {
     this.icon,
     this.obscureText = false,
     this.keyboardType,
+    this.suffixIcon,
+    this.textInputAction,
+    this.onSubmitted,
     super.key,
   });
 
@@ -37,6 +43,8 @@ class LKTextField extends StatelessWidget {
             controller: ctrl,
             obscureText: obscureText,
             keyboardType: keyboardType,
+            textInputAction: textInputAction,
+            onSubmitted: onSubmitted,
             autocorrect: false,
             style: const TextStyle(fontSize: 15, color: LKColors.fgDark),
             cursorColor: LKColors.fgDark,
@@ -46,6 +54,7 @@ class LKTextField extends StatelessWidget {
                 minWidth: 42,
                 minHeight: 44,
               ),
+              suffixIcon: suffixIcon,
             ),
           ),
         ],

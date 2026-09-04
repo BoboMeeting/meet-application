@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'logger_service.dart' as log;
 
 /// 登录失败异常，message 可直接展示给用户。
 class AuthException implements Exception {
@@ -64,6 +67,8 @@ class AuthService {
 
   static final AuthService instance = AuthService._();
 
+  static const _tag = 'Auth';
+
   static const _keyBaseUrl = 'auth-base-url';
   static const _keyToken = 'auth-access-token';
   static const _keyUser = 'auth-user';
@@ -120,6 +125,10 @@ class AuthService {
         _user = null;
       }
     }
+    log.LoggerService.info(
+      '恢复会话  baseUrl=${_baseUrl ?? '<未设置>'}  account=$_lastAccount  loggedIn=$isLoggedIn',
+      name: _tag,
+    );
   }
 
   /// 调用管理平台登录接口。成功后保存会话，失败抛出 [AuthException]。
@@ -128,11 +137,14 @@ class AuthService {
     required String account,
     required String password,
   }) async {
+    final sw = Stopwatch()..start();
     final url = normalizeBaseUrl(baseUrl);
     if (url == null) {
+      log.LoggerService.warning('登录失败：URL 格式非法  rawUrl=$baseUrl', name: _tag);
       throw AuthException('请输入正确的管理平台 URL');
     }
 
+    log.LoggerService.info('登录请求 POST $url/api/auth/login  account=$account', name: _tag);
     final http.Response resp;
     try {
       resp = await _httpClient
@@ -142,10 +154,26 @@ class AuthService {
             body: jsonEncode({'account': account, 'password': password}),
           )
           .timeout(const Duration(seconds: 15));
-    } catch (e) {
-      throw AuthException('无法连接管理平台，请检查 URL 或网络后重试');
+    } catch (e, st) {
+      sw.stop();
+      final isTimeout =
+          e.toString().toLowerCase().contains('timeout') ||
+          e is TimeoutException ||
+          sw.elapsedMilliseconds >= 15000 - 200;
+      log.LoggerService.error(
+        '登录${isTimeout ? '超时' : '失败（网络）'} elapsed=${sw.elapsedMilliseconds}ms  url=$url  err=${e.runtimeType}: $e',
+        name: _tag,
+        error: e,
+        stackTrace: st,
+      );
+      throw AuthException(
+        isTimeout
+            ? '管理平台登录超时（${sw.elapsedMilliseconds}ms），请确认地址 $url 是否可访问且已部署'
+            : '无法连接管理平台，请检查 URL 或网络后重试',
+      );
     }
 
+    sw.stop();
     Map<String, dynamic>? body;
     if (resp.body.isNotEmpty) {
       try {
@@ -158,12 +186,18 @@ class AuthService {
 
     if (resp.statusCode != 200) {
       final msg = body?['error'] as String?;
-      throw AuthException(msg ?? '登录失败（HTTP ${resp.statusCode}）');
+      final finalMsg = msg ?? '登录失败（HTTP ${resp.statusCode}）';
+      log.LoggerService.warning(
+        '登录失败 HTTP ${resp.statusCode}  elapsed=${sw.elapsedMilliseconds}ms  msg=$finalMsg',
+        name: _tag,
+      );
+      throw AuthException(finalMsg);
     }
 
     final token = body?['accessToken'] as String?;
     final userJson = body?['user'];
     if (token == null || token.isEmpty || userJson is! Map<String, dynamic>) {
+      log.LoggerService.warning('登录响应格式异常（缺 token 或 user 字段）', name: _tag);
       throw AuthException('登录响应格式异常');
     }
     final user = AuthUser.fromJson(userJson);
@@ -179,6 +213,10 @@ class AuthService {
     await prefs.setString(_keyUser, jsonEncode(user.toJson()));
     await prefs.setString(_keyAccount, account);
 
+    log.LoggerService.info(
+      '登录成功  elapsed=${sw.elapsedMilliseconds}ms  uid=${user.id}  nickname=${user.nickname}  role=${user.role}',
+      name: _tag,
+    );
     return user;
   }
 
@@ -187,21 +225,25 @@ class AuthService {
   Future<String> saveBaseUrl(String raw) async {
     final url = normalizeBaseUrl(raw);
     if (url == null) {
+      log.LoggerService.warning('保存管理平台地址失败（格式非法） raw="$raw"', name: _tag);
       throw AuthException('请输入正确的管理平台 URL');
     }
     _baseUrl = url;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyBaseUrl, url);
+    log.LoggerService.info('保存管理平台地址 url=$url', name: _tag);
     return url;
   }
 
   /// 退出登录：仅清除 token 与用户信息，保留管理平台地址与账号用于下次回填。
   Future<void> logout() async {
+    final uid = _user?.id;
     _accessToken = null;
     _user = null;
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_keyToken);
     await prefs.remove(_keyUser);
+    log.LoggerService.info('用户登出  uid=$uid  account=$_lastAccount', name: _tag);
   }
 
   /// 规范化管理平台地址：补全 scheme、去除末尾斜杠；非法地址返回 null。

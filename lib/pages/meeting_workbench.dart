@@ -7,8 +7,11 @@ import 'package:livekit_example/pages/create_room_page.dart';
 import 'package:livekit_example/pages/login.dart';
 import 'package:livekit_example/pages/prejoin.dart';
 import 'package:livekit_example/services/auth_service.dart';
+import 'package:livekit_example/services/logger_service.dart' as log;
 import 'package:livekit_example/services/room_service.dart';
 import 'package:livekit_example/theme.dart';
+
+const _tag = 'Workbench';
 
 /// 会议工作台（首页）：登录后展示当前用户的会议列表，可预约、加入。
 ///
@@ -38,20 +41,29 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
       _loading = true;
       _error = null;
     });
+    log.LoggerService.info('刷新会议列表', name: _tag);
     try {
       final rooms = await RoomService.instance.listMyRooms();
       if (!mounted) return;
+      log.LoggerService.info('加载完成，共 ${rooms.length} 个房间', name: _tag);
       setState(() {
         _rooms = rooms;
         _loading = false;
       });
     } on RoomApiException catch (e) {
+      log.LoggerService.warning('加载房间列表失败(业务): ${e.message}', name: _tag);
       if (!mounted) return;
       setState(() {
         _error = e.message;
         _loading = false;
       });
-    } catch (e) {
+    } catch (e, st) {
+      log.LoggerService.error(
+        '加载房间列表异常',
+        name: _tag,
+        error: e,
+        stackTrace: st,
+      );
       if (!mounted) return;
       setState(() {
         _error = '加载失败：$e';
@@ -74,6 +86,10 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
   }
 
   Future<void> _joinRoom(RoomSummary room) async {
+    log.LoggerService.info(
+      '用户点击加入会议 roomId=${room.id} title="${room.title}" status=${room.statusStr} locked=${room.locked}',
+      name: _tag,
+    );
     // 未开始的会议二次确认
     if (room.status == RoomStatus.scheduled ||
         (room.status == RoomStatus.open && !room.isInProgress)) {
@@ -82,33 +98,73 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
         message: '会议尚未开始，是否现在进入？',
         confirmText: '进入会议',
       );
-      if (confirmed != true) return;
+      if (confirmed != true) {
+        log.LoggerService.info('用户取消加入  roomId=${room.id}', name: _tag);
+        return;
+      }
     }
 
     if (room.locked) {
       if (!mounted) return;
+      log.LoggerService.warning('房间已锁定，拒绝加入  roomId=${room.id}', name: _tag);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('房间已锁定，无法加入')),
       );
       return;
     }
 
+    final totalSw = Stopwatch()..start();
     try {
+      // 入会第一步：调管理平台 → 获取调度服务地址 + RoomTicket
       final nickname = AuthService.instance.user?.nickname;
-      final result = await RoomService.instance.joinRoom(room.id, nickname: nickname);
+      log.LoggerService.info('[入会UI] Step1 → 请求管理平台 roomId=${room.id} nickname=$nickname', name: _tag);
+      final joinStep1 = await RoomService.instance
+          .joinRoom(room.id, nickname: nickname);
+
+      // 入会第二步：调调度服务 → 用 JWT + Ticket 换取 LiveKit 参数
+      log.LoggerService.info(
+        '[入会UI] Step2 → 请求调度服务 scheduler=${joinStep1.schedulerUrl}',
+        name: _tag,
+      );
+      final lkParams = await RoomService.instance.exchangeSchedulerJoin(
+        schedulerUrl: joinStep1.schedulerUrl,
+        roomTicket: joinStep1.roomTicket,
+      );
+
+      // 跳转到 prejoin 页面，携带 liveKit URL 与 Token
       if (!mounted) return;
+      totalSw.stop();
+      log.LoggerService.info(
+        '[入会UI] 两步骤完成，跳转 PreJoinPage  total=${totalSw.elapsedMilliseconds}ms  liveKitUrl=${lkParams.liveKitUrl}',
+        name: _tag,
+      );
       await Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => PreJoinPage(
-            args: JoinArgs(url: result.liveKitUrl, token: result.liveKitToken),
+            args: JoinArgs(
+              url: lkParams.liveKitUrl,
+              token: lkParams.liveKitToken,
+            ),
           ),
         ),
       );
     } on RoomApiException catch (e) {
+      totalSw.stop();
+      log.LoggerService.warning(
+        '[入会UI] 业务异常 total=${totalSw.elapsedMilliseconds}ms  msg=${e.message}',
+        name: _tag,
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(e.message)));
-    } catch (e) {
+    } catch (e, st) {
+      totalSw.stop();
+      log.LoggerService.error(
+        '[入会UI] 未预期异常 total=${totalSw.elapsedMilliseconds}ms',
+        name: _tag,
+        error: e,
+        stackTrace: st,
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('入会失败：$e')));

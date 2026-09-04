@@ -26,12 +26,11 @@ void main() {
     auth.resetForTesting();
   });
 
-  testWidgets('登录页展示平台 URL / 用户名 / 密码输入框与登录、配置按钮', (tester) async {
+  testWidgets('登录页展示用户名 / 密码输入框与登录、配置按钮', (tester) async {
     await tester.pumpWidget(const LiveKitExampleApp());
     await tester.pumpAndSettle();
 
     expect(find.text('登录管理平台'), findsOneWidget);
-    expect(find.widgetWithText(LKTextField, '管理平台 URL'), findsOneWidget);
     expect(find.widgetWithText(LKTextField, '用户名'), findsOneWidget);
     expect(find.widgetWithText(LKTextField, '密码'), findsOneWidget);
     expect(find.widgetWithText(ElevatedButton, '登录'), findsOneWidget);
@@ -53,18 +52,20 @@ void main() {
     expect(tester.widget<TextField>(_textFieldIn('密码')).obscureText, isTrue);
   });
 
-  testWidgets('未填写完整时点登录，显示校验错误', (tester) async {
+  testWidgets('未配置平台地址时点登录，提示前往设置配置', (tester) async {
     await tester.pumpWidget(const LiveKitExampleApp());
     await tester.pumpAndSettle();
 
     await tester.enterText(_textFieldIn('用户名'), 'alice');
+    await tester.enterText(_textFieldIn('密码'), 'secret123');
     await tester.tap(find.widgetWithText(ElevatedButton, '登录'));
     await tester.pump();
 
-    expect(find.text('请填写管理平台 URL、用户名和密码'), findsOneWidget);
+    expect(find.text('请先在设置中配置管理平台地址'), findsOneWidget);
   });
 
   testWidgets('账号或密码错误时，行内展示后端返回的错误信息', (tester) async {
+    await auth.saveBaseUrl('http://localhost:5000');
     auth.debugHttpClient = MockClient((request) async {
       return http.Response(
         jsonEncode({'error': '账号或密码错误'}),
@@ -76,7 +77,6 @@ void main() {
     await tester.pumpWidget(const LiveKitExampleApp());
     await tester.pumpAndSettle();
 
-    await tester.enterText(_textFieldIn('管理平台 URL'), 'http://localhost:5000');
     await tester.enterText(_textFieldIn('用户名'), 'alice');
     await tester.enterText(_textFieldIn('密码'), 'wrong-pwd');
     await tester.tap(find.widgetWithText(ElevatedButton, '登录'));
@@ -116,11 +116,11 @@ void main() {
     });
     auth.debugHttpClient = mockClient;
     RoomService.instance.debugHttpClient = mockClient;
+    await auth.saveBaseUrl('localhost:5000/');
 
     await tester.pumpWidget(const LiveKitExampleApp());
     await tester.pumpAndSettle();
 
-    await tester.enterText(_textFieldIn('管理平台 URL'), 'localhost:5000/');
     await tester.enterText(_textFieldIn('用户名'), 'alice');
     await tester.enterText(_textFieldIn('密码'), 'secret123');
     await tester.tap(find.widgetWithText(ElevatedButton, '登录'));
@@ -135,7 +135,7 @@ void main() {
     expect(find.text('登录管理平台'), findsNothing);
   });
 
-  testWidgets('配置弹窗可保存管理平台地址，本地持久化并回填', (tester) async {
+  testWidgets('配置弹窗可保存管理平台地址并持久化', (tester) async {
     await tester.pumpWidget(const LiveKitExampleApp());
     await tester.pumpAndSettle();
 
@@ -153,13 +153,9 @@ void main() {
     await tester.tap(find.widgetWithText(ElevatedButton, '保存'));
     await tester.pumpAndSettle();
 
-    // 弹窗关闭，提示成功，登录页 URL 已回填为规范化地址
+    // 弹窗关闭，提示成功
     expect(find.byType(AlertDialog), findsNothing);
     expect(find.text('管理平台地址已保存'), findsOneWidget);
-    expect(
-      tester.widget<TextField>(_textFieldIn('管理平台 URL')).controller?.text,
-      'http://192.168.1.20:6000',
-    );
 
     // 未登录但地址已持久化
     expect(auth.isLoggedIn, isFalse);

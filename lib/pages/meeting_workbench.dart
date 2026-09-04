@@ -167,6 +167,15 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
               itemBuilder: (_) => const [
                 PopupMenuItem(value: 'logout', child: Text('退出登录')),
               ],
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.person_outline, size: 20),
+                  const SizedBox(width: 6),
+                  Text(AuthService.instance.user?.nickname ?? '未登录'),
+                  const Icon(Icons.arrow_drop_down, size: 20),
+                ],
+              ),
             ),
           ],
         ),

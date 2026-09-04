@@ -178,17 +178,34 @@ class _CreateRoomPageState extends State<CreateRoomPage> {
                         ),
                       ],
                       const SizedBox(height: 24),
-                      ElevatedButton.icon(
-                        onPressed: _busy ? null : _submit,
-                        icon: _busy
-                            ? const SizedBox(
-                                height: 16,
-                                width: 16,
-                                child: CircularProgressIndicator(
-                                    color: Colors.white, strokeWidth: 2),
-                              )
-                            : const Icon(Icons.add),
-                        label: Text(_busy ? '提交中...' : '预约会议'),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: _busy
+                                  ? null
+                                  : () => Navigator.of(context).pop(),
+                              icon: const Icon(Icons.close, size: 18),
+                              label: const Text('取消'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: _busy ? null : _submit,
+                              icon: _busy
+                                  ? const SizedBox(
+                                      height: 16,
+                                      width: 16,
+                                      child: CircularProgressIndicator(
+                                          color: Colors.white,
+                                          strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.add),
+                              label: Text(_busy ? '提交中...' : '预约会议'),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),

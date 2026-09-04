@@ -5,7 +5,7 @@ import 'package:livekit_example/services/auth_service.dart';
 import 'package:livekit_example/theme.dart';
 import 'package:livekit_example/widgets/text_field.dart';
 
-/// 管理平台登录页：填写管理平台 URL、用户名、密码后调用 /api/auth/login。
+/// 管理平台登录页：填写用户名、密码后调用 /api/auth/login。管理平台地址在设置中配置。
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
 
@@ -14,7 +14,6 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final _urlCtrl = TextEditingController();
   final _accountCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
 
@@ -25,15 +24,12 @@ class _LoginPageState extends State<LoginPage> {
   @override
   void initState() {
     super.initState();
-    // 回填上次成功登录使用的管理平台地址与账号
-    final auth = AuthService.instance;
-    _urlCtrl.text = auth.baseUrl ?? '';
-    _accountCtrl.text = auth.lastAccount ?? '';
+    // 回填上次成功登录使用的账号
+    _accountCtrl.text = AuthService.instance.lastAccount ?? '';
   }
 
   @override
   void dispose() {
-    _urlCtrl.dispose();
     _accountCtrl.dispose();
     _passwordCtrl.dispose();
     super.dispose();
@@ -42,12 +38,16 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _login() async {
     if (_busy) return;
 
-    final url = _urlCtrl.text.trim();
+    final url = AuthService.instance.baseUrl ?? '';
     final account = _accountCtrl.text.trim();
     final password = _passwordCtrl.text;
 
-    if (url.isEmpty || account.isEmpty || password.isEmpty) {
-      setState(() => _error = '请填写管理平台 URL、用户名和密码');
+    if (url.isEmpty) {
+      setState(() => _error = '请先在设置中配置管理平台地址');
+      return;
+    }
+    if (account.isEmpty || password.isEmpty) {
+      setState(() => _error = '请填写用户名和密码');
       return;
     }
 
@@ -81,9 +81,8 @@ class _LoginPageState extends State<LoginPage> {
     await showDialog<void>(
       context: context,
       builder: (ctx) => _ServerUrlConfigDialog(
-        initialUrl: _urlCtrl.text.trim(),
-        onSaved: (url) {
-          _urlCtrl.text = url;
+        initialUrl: AuthService.instance.baseUrl ?? '',
+        onSaved: (_) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('管理平台地址已保存')),
           );
@@ -150,14 +149,6 @@ class _LoginPageState extends State<LoginPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            LKTextField(
-              label: '管理平台 URL',
-              ctrl: _urlCtrl,
-              icon: Icons.link,
-              keyboardType: TextInputType.url,
-              textInputAction: TextInputAction.next,
-            ),
-            const SizedBox(height: 18),
             LKTextField(
               label: '用户名',
               ctrl: _accountCtrl,

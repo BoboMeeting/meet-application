@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:livekit_example/pages/meeting_workbench.dart';
 import 'package:livekit_example/services/auth_service.dart';
 import 'package:livekit_example/theme.dart';
 import 'package:logging/logging.dart';
 import 'package:intl/intl.dart';
-import 'pages/connect.dart';
 import 'pages/login.dart';
 
 void main() async {
@@ -46,7 +46,7 @@ class LiveKitExampleApp extends StatelessWidget {
         title: 'LiveKit Flutter Example',
         theme: LiveKitTheme().buildThemeData(context),
         home: AuthService.instance.isLoggedIn
-            ? const ConnectPage()
+            ? const MeetingWorkbenchPage()
             : const LoginPage(),
       );
 }

@@ -195,13 +195,11 @@ class AuthService {
     return url;
   }
 
-  /// 退出登录并清除本地会话。
+  /// 退出登录：仅清除 token 与用户信息，保留管理平台地址与账号用于下次回填。
   Future<void> logout() async {
-    _baseUrl = null;
     _accessToken = null;
     _user = null;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_keyBaseUrl);
     await prefs.remove(_keyToken);
     await prefs.remove(_keyUser);
   }

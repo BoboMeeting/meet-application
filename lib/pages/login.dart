@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:livekit_example/pages/connect.dart';
+import 'package:livekit_example/pages/meeting_workbench.dart';
 import 'package:livekit_example/services/auth_service.dart';
 import 'package:livekit_example/theme.dart';
 import 'package:livekit_example/widgets/text_field.dart';
@@ -64,7 +64,7 @@ class _LoginPageState extends State<LoginPage> {
       );
       if (!mounted) return;
       await Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(builder: (_) => const ConnectPage()),
+        MaterialPageRoute<void>(builder: (_) => const MeetingWorkbenchPage()),
       );
     } on AuthException catch (e) {
       if (mounted) setState(() => _error = e.message);

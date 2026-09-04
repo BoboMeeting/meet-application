@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:livekit_example/main.dart';
 import 'package:livekit_example/services/auth_service.dart';
+import 'package:livekit_example/services/room_service.dart';
 import 'package:livekit_example/widgets/text_field.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -86,27 +87,35 @@ void main() {
     expect(find.text('登录管理平台'), findsOneWidget);
   });
 
-  testWidgets('登录成功后跳转到会议连接页', (tester) async {
-    http.BaseRequest? captured;
-    auth.debugHttpClient = MockClient((request) async {
-      captured = request;
-      return http.Response(
-        jsonEncode({
-          'accessToken': 'jwt-token-abc',
-          'expiresInSeconds': 7200,
-          'user': {
-            'id': 'u-001',
-            'account': 'alice',
-            'nickname': 'Alice',
-            'avatarUrl': null,
-            'role': 0,
-            'status': 0,
-          },
-        }),
-        200,
-        headers: {'content-type': 'application/json'},
-      );
+  testWidgets('登录成功后跳转到会议工作台', (tester) async {
+    final capturedUrls = <Uri>[];
+    final mockClient = MockClient((request) async {
+      capturedUrls.add(request.url);
+      // 登录接口返回成功；房间列表接口返回空数组
+      if (request.url.path.endsWith('/api/auth/login')) {
+        return http.Response(
+          jsonEncode({
+            'accessToken': 'jwt-token-abc',
+            'expiresInSeconds': 7200,
+            'user': {
+              'id': 'u-001',
+              'account': 'alice',
+              'nickname': 'Alice',
+              'avatarUrl': null,
+              'role': 0,
+              'status': 0,
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+      // 其它接口（如房间列表）返回空数组
+      return http.Response('[]', 200,
+          headers: {'content-type': 'application/json'});
     });
+    auth.debugHttpClient = mockClient;
+    RoomService.instance.debugHttpClient = mockClient;
 
     await tester.pumpWidget(const LiveKitExampleApp());
     await tester.pumpAndSettle();
@@ -117,12 +126,12 @@ void main() {
     await tester.tap(find.widgetWithText(ElevatedButton, '登录'));
     await tester.pumpAndSettle();
 
-    // 请求发往规范化后的地址
-    expect(captured, isNotNull);
-    expect(captured!.url, Uri.parse('http://localhost:5000/api/auth/login'));
+    // 登录请求发往规范化后的地址
+    expect(capturedUrls,
+        contains(Uri.parse('http://localhost:5000/api/auth/login')));
 
-    // 已进入会议连接页
-    expect(find.text('Connect to a room'), findsOneWidget);
+    // 已进入会议工作台
+    expect(find.text('会议工作台'), findsOneWidget);
     expect(find.text('登录管理平台'), findsNothing);
   });
 

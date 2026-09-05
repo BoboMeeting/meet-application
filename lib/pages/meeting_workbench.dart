@@ -171,10 +171,60 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
     }
   }
 
+  /// 主持人取消会议：二次确认 → 调接口 → 刷新列表。
+  Future<void> _cancelRoom(RoomSummary room) async {
+    log.LoggerService.info(
+      '主持人点击取消会议 roomId=${room.id} title="${room.title}" status=${room.statusStr}',
+      name: _tag,
+    );
+    final confirmed = await _confirm(
+      title: '取消会议',
+      message: room.isInProgress
+          ? '会议「${room.title}」正在进行中，确定取消吗？\n取消后会议立即结束，所有成员将无法继续加入。'
+          : '确定取消会议「${room.title}」吗？\n取消后所有成员将无法加入该会议。',
+      confirmText: '取消会议',
+      cancelText: '再想想',
+      destructive: true,
+    );
+    if (confirmed != true) {
+      log.LoggerService.info('用户放弃取消会议  roomId=${room.id}', name: _tag);
+      return;
+    }
+
+    try {
+      await RoomService.instance.cancelRoom(room.id);
+      log.LoggerService.info('取消会议成功  roomId=${room.id}', name: _tag);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('会议已取消')),
+      );
+      await _loadRooms();
+    } on RoomApiException catch (e) {
+      log.LoggerService.warning(
+          '取消会议失败(业务) roomId=${room.id} msg=${e.message}',
+          name: _tag);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (e, st) {
+      log.LoggerService.error(
+        '取消会议异常  roomId=${room.id}',
+        name: _tag,
+        error: e,
+        stackTrace: st,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('取消失败：$e')));
+    }
+  }
+
   Future<bool?> _confirm({
     required String title,
     required String message,
     required String confirmText,
+    String cancelText = '取消',
+    bool destructive = false,
   }) =>
       showDialog<bool>(
         context: context,
@@ -184,10 +234,16 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('取消'),
+              child: Text(cancelText),
             ),
             ElevatedButton(
               onPressed: () => Navigator.of(ctx).pop(true),
+              style: destructive
+                  ? ElevatedButton.styleFrom(
+                      backgroundColor: LKColors.destructiveDark,
+                      foregroundColor: Colors.white,
+                    )
+                  : null,
               child: Text(confirmText),
             ),
           ],
@@ -206,15 +262,25 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(
           title: const Text('会议工作台'),
+          backgroundColor: LKColors.neutral800,
+          shape: const Border(
+            bottom: BorderSide(color: LKColors.border),
+          ),
           actions: [
-            // 历史会议切换
-            TextButton.icon(
-              onPressed: () => setState(() => _showHistory = !_showHistory),
-              icon: Icon(
-                _showHistory ? Icons.history : Icons.history_toggle_off,
-                size: 18,
+            // 历史会议切换：固定宽度 + 左对齐，避免切换时按钮大小变化
+            SizedBox(
+              width: 150,
+              child: TextButton.icon(
+                onPressed: () => setState(() => _showHistory = !_showHistory),
+                style: TextButton.styleFrom(
+                  alignment: Alignment.centerLeft,
+                ),
+                icon: Icon(
+                  _showHistory ? Icons.history : Icons.history_toggle_off,
+                  size: 18,
+                ),
+                label: Text(_showHistory ? '进行中' : '历史会议'),
               ),
-              label: Text(_showHistory ? '历史会议' : '返回进行中'),
             ),
             PopupMenuButton<String>(
               onSelected: (v) {
@@ -238,6 +304,8 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
         floatingActionButton: !_showHistory
             ? FloatingActionButton.extended(
                 onPressed: _openCreatePage,
+                backgroundColor: LKColors.lkAccentDark,
+                foregroundColor: LKColors.primaryFgDark,
                 icon: const Icon(Icons.add),
                 label: const Text('预约会议'),
               )
@@ -286,6 +354,7 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
                 room: r,
                 currentUserId: AuthService.instance.user?.id ?? '',
                 onJoin: () => _joinRoom(r),
+                onCancel: () => _cancelRoom(r),
               ),
             )),
       ],
@@ -367,16 +436,18 @@ class _BreathingDotState extends State<_BreathingDot>
       );
 }
 
-/// 会议卡片：状态徽章 + 主题/时间/主持人 + 加入按钮。
+/// 会议卡片：状态徽章 + 主题/时间/主持人 + 加入/取消按钮。
 class _RoomCard extends StatelessWidget {
   const _RoomCard({
     required this.room,
     required this.currentUserId,
     required this.onJoin,
+    required this.onCancel,
   });
   final RoomSummary room;
   final String currentUserId;
   final VoidCallback onJoin;
+  final VoidCallback onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -501,6 +572,11 @@ class _RoomCard extends StatelessWidget {
                         color: LKColors.textSecondary, fontSize: 12),
                   ),
                 const Spacer(),
+                // 仅主持人且会议未结束时可取消
+                if (isHost && !room.isHistory) ...[
+                  _CancelButton(onCancel: onCancel),
+                  const SizedBox(width: 8),
+                ],
                 _JoinButton(room: room, onJoin: onJoin),
               ],
             ),
@@ -532,6 +608,24 @@ class _JoinButton extends StatelessWidget {
       label: const Text('加入会议'),
     );
   }
+}
+
+/// 取消会议按钮（仅主持人可见）：次级描边样式 + 危险色，弱化于主操作"加入会议"。
+class _CancelButton extends StatelessWidget {
+  const _CancelButton({required this.onCancel});
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) => OutlinedButton.icon(
+        onPressed: onCancel,
+        icon: const Icon(Icons.event_busy, size: 16),
+        label: const Text('取消会议'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: LKColors.destructiveDark,
+          side: BorderSide(
+              color: LKColors.destructiveDark.withValues(alpha: 0.6)),
+        ),
+      );
 }
 
 /// 根据房间状态计算徽章文案与颜色。

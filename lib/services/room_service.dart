@@ -22,6 +22,7 @@ import 'logger_service.dart' as log;
 ///   - GET    {baseUrl}/api/rooms/                → 列出我的房间
 ///   - GET    {baseUrl}/api/rooms/{id}            → 查询房间详情
 ///   - POST   {baseUrl}/api/rooms/create          → 预约会议
+///   - POST   {baseUrl}/api/rooms/{id}/cancel     → 取消会议（仅主持人）
 class RoomService {
   RoomService._();
   static final RoomService instance = RoomService._();
@@ -217,6 +218,44 @@ class RoomService {
       sw.stop();
       log.LoggerService.error(
         'POST /api/rooms/create  失败 elapsed=${sw.elapsedMilliseconds}ms',
+        name: _tag,
+        error: e,
+        stackTrace: st,
+      );
+      rethrow;
+    }
+  }
+
+  /// 取消会议（仅主持人/管理员）。成功后返回更新后的房间摘要（状态为已取消）。
+  ///
+  /// 对应后端：POST /api/rooms/{roomId}/cancel
+  Future<RoomSummary> cancelRoom(String roomId) async {
+    final sw = Stopwatch()..start();
+    log.LoggerService.info('POST /api/rooms/$roomId/cancel', name: _tag);
+    try {
+      final resp = await _httpClient
+          .post(Uri.parse(_urlOf('/api/rooms/$roomId/cancel')),
+              headers: _authHeaders)
+          .timeout(const Duration(seconds: 15));
+      sw.stop();
+      log.LoggerService.info(
+        'POST /api/rooms/$roomId/cancel  HTTP ${resp.statusCode}  elapsed=${sw.elapsedMilliseconds}ms',
+        name: _tag,
+      );
+      final body = _decode(resp);
+      if (body == null) throw RoomApiException('取消会议响应为空');
+      final room = RoomSummary.fromJson(body);
+      log.LoggerService.info(
+        '取消会议成功  roomId=${room.id}  status=${room.statusStr}',
+        name: _tag,
+      );
+      return room;
+    } on RoomApiException {
+      rethrow;
+    } catch (e, st) {
+      sw.stop();
+      log.LoggerService.error(
+        'POST /api/rooms/$roomId/cancel  失败 elapsed=${sw.elapsedMilliseconds}ms',
         name: _tag,
         error: e,
         stackTrace: st,

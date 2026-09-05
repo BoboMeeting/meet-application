@@ -4,11 +4,13 @@ import 'dart:math' as math;
 import 'package:dropdown_button2/dropdown_button2.dart';
 import 'package:flutter/material.dart';
 import 'package:livekit_client/livekit_client.dart';
-import 'package:livekit_example/exts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../services/logger_service.dart' as log;
 import '../theme.dart';
-import 'room.dart';
+import '../utils.dart';
+
+const _tag = 'PreJoin';
 
 class JoinArgs {
   JoinArgs({
@@ -35,14 +37,13 @@ class JoinArgs {
   final bool enableBackupVideoCodec;
 }
 
-class PreJoinPage extends StatefulWidget {
-  const PreJoinPage({required this.args, super.key});
-  final JoinArgs args;
+class LocalDevCheckPage extends StatefulWidget {
+  const LocalDevCheckPage({super.key});
   @override
-  State<StatefulWidget> createState() => _PreJoinPageState();
+  State<StatefulWidget> createState() => _LocalDevCheckPageState();
 }
 
-class _PreJoinPageState extends State<PreJoinPage> {
+class _LocalDevCheckPageState extends State<LocalDevCheckPage> {
   static const _prefKeyEnableVideo = 'prejoin-enable-video';
   static const _prefKeyEnableAudio = 'prejoin-enable-audio';
 
@@ -50,7 +51,6 @@ class _PreJoinPageState extends State<PreJoinPage> {
   List<MediaDevice> _videoInputs = [];
   StreamSubscription? _subscription;
 
-  bool _busy = false;
   bool _enableVideo = true;
   bool _enableAudio = true;
   LocalAudioTrack? _audioTrack;
@@ -63,16 +63,43 @@ class _PreJoinPageState extends State<PreJoinPage> {
   @override
   void initState() {
     super.initState();
+    if (lkPlatformIsDesktop()) {
+      onWindowShouldClose = () async {
+        log.LoggerService.info('桌面端: 窗口关闭请求, 开始释放本地轨道', name: _tag);
+        await _releaseLocalTracks();
+      };
+    }
     unawaited(_initStateAsync());
   }
 
   Future<void> _initStateAsync() async {
-    await _readPrefs();
-    _subscription = Hardware.instance.onDeviceChange.stream.listen(
-      _loadDevices,
-    );
-    final devices = await Hardware.instance.enumerateDevices();
-    await _loadDevices(devices);
+    log.LoggerService.info('PreJoinPage initState 开始', name: _tag);
+      log.LoggerService.info('LocalDevCheckPage initState 开始', name: _tag);
+      log.LoggerService.debug('LocalDevCheckPage initState 完成', name: _tag);
+    try {
+      await _readPrefs();
+      log.LoggerService.debug(
+        '读取偏好: enableVideo=$_enableVideo, enableAudio=$_enableAudio',
+        name: _tag,
+      );
+      _subscription = Hardware.instance.onDeviceChange.stream.listen(
+        _loadDevices,
+      );
+      final devices = await Hardware.instance.enumerateDevices();
+      log.LoggerService.info(
+        '设备枚举完成, 共 ${devices.length} 个设备',
+        name: _tag,
+      );
+      await _loadDevices(devices);
+      log.LoggerService.info('LocalDevCheckPage initState 完成', name: _tag);
+    } catch (e, st) {
+      log.LoggerService.error(
+        'LocalDevCheckPage initState 异常',
+        name: _tag,
+        error: e,
+        stackTrace: st,
+      );
+    }
   }
 
   @override
@@ -84,6 +111,10 @@ class _PreJoinPageState extends State<PreJoinPage> {
   Future<void> _loadDevices(List<MediaDevice> devices) async {
     _audioInputs = devices.where((d) => d.kind == 'audioinput').toList();
     _videoInputs = devices.where((d) => d.kind == 'videoinput').toList();
+    log.LoggerService.debug(
+      '加载设备: audioInputs=${_audioInputs.length}, videoInputs=${_videoInputs.length}',
+      name: _tag,
+    );
 
     if (_selectedAudioDevice != null && !_audioInputs.contains(_selectedAudioDevice)) {
       _selectedAudioDevice = null;
@@ -158,134 +189,111 @@ class _PreJoinPageState extends State<PreJoinPage> {
 
   Future<void> _changeLocalAudioTrack() async {
     if (!_enableAudio) return;
+    log.LoggerService.debug('创建本地音频轨道开始', name: _tag);
     if (_audioTrack != null) {
       await _audioTrack!.stop();
       _audioTrack = null;
+      log.LoggerService.debug('已停止旧音频轨道', name: _tag);
     }
 
     if (_selectedAudioDevice != null) {
-      _audioTrack = await LocalAudioTrack.create(
-        AudioCaptureOptions(deviceId: _selectedAudioDevice!.deviceId),
-      );
-      await _audioTrack!.start();
+      try {
+        _audioTrack = await LocalAudioTrack.create(
+          AudioCaptureOptions(deviceId: _selectedAudioDevice!.deviceId),
+        );
+        await _audioTrack!.start();
+        log.LoggerService.info(
+          '本地音频轨道创建并启动成功, deviceId=${_selectedAudioDevice!.deviceId}',
+          name: _tag,
+        );
+      } catch (e, st) {
+        log.LoggerService.error(
+          '本地音频轨道创建失败',
+          name: _tag,
+          error: e,
+          stackTrace: st,
+        );
+      }
     }
   }
 
   Future<void> _changeLocalVideoTrack() async {
     if (!_enableVideo) return;
+    log.LoggerService.debug(
+      '创建本地视频轨道开始, params=${_selectedVideoParameters.dimensions.width}'
+      'x${_selectedVideoParameters.dimensions.height}',
+      name: _tag,
+    );
     if (_videoTrack != null) {
       await _videoTrack!.stop();
       _videoTrack = null;
+      log.LoggerService.debug('已停止旧视频轨道', name: _tag);
     }
 
     if (_selectedVideoDevice != null) {
-      _videoTrack = await LocalVideoTrack.createCameraTrack(
-        CameraCaptureOptions(
-          deviceId: _selectedVideoDevice!.deviceId,
-          params: _selectedVideoParameters,
-        ),
-      );
-      await _videoTrack!.start();
+      try {
+        _videoTrack = await LocalVideoTrack.createCameraTrack(
+          CameraCaptureOptions(
+            deviceId: _selectedVideoDevice!.deviceId,
+            params: _selectedVideoParameters,
+          ),
+        );
+        await _videoTrack!.start();
+        log.LoggerService.info(
+          '本地视频轨道创建并启动成功, deviceId=${_selectedVideoDevice!.deviceId}',
+          name: _tag,
+        );
+      } catch (e, st) {
+        log.LoggerService.error(
+          '本地视频轨道创建失败',
+          name: _tag,
+          error: e,
+          stackTrace: st,
+        );
+      }
     }
   }
 
   @override
   void dispose() {
     unawaited(_subscription?.cancel());
+    onWindowShouldClose = null;
+    unawaited(_releaseLocalTracks());
     super.dispose();
   }
 
-  _join(BuildContext context) async {
-    _busy = true;
-
-    setState(() {});
-
-    final args = widget.args;
+  Future<void> _releaseLocalTracks() async {
+    final audioTrack = _audioTrack;
+    final videoTrack = _videoTrack;
+    _audioTrack = null;
+    _videoTrack = null;
 
     try {
-      //create new room
-      const cameraEncoding = VideoEncoding(
-        maxBitrate: 5 * 1000 * 1000,
-        maxFramerate: 30,
+      await audioTrack?.stop();
+    } catch (e, st) {
+      log.LoggerService.error(
+        '释放本地音频轨道失败',
+        name: _tag,
+        error: e,
+        stackTrace: st,
       );
-
-      const screenEncoding = VideoEncoding(
-        maxBitrate: 3 * 1000 * 1000,
-        maxFramerate: 15,
-      );
-
-      E2EEOptions? e2eeOptions;
-      if (args.e2ee && args.e2eeKey != null) {
-        final keyProvider = await BaseKeyProvider.create();
-        e2eeOptions = E2EEOptions(keyProvider: keyProvider);
-        await keyProvider.setKey(args.e2eeKey!);
-      }
-
-      final room = Room(
-        roomOptions: RoomOptions(
-          adaptiveStream: args.adaptiveStream,
-          dynacast: args.dynacast,
-          defaultAudioPublishOptions: const AudioPublishOptions(
-            name: 'custom_audio_track_name',
-          ),
-          defaultCameraCaptureOptions: const CameraCaptureOptions(
-            maxFrameRate: 30,
-            params: VideoParameters(dimensions: VideoDimensions(1280, 720)),
-          ),
-          defaultScreenShareCaptureOptions: const ScreenShareCaptureOptions(
-            useiOSBroadcastExtension: true,
-            params: VideoParameters(
-              dimensions: VideoDimensionsPresets.h1080_169,
-            ),
-          ),
-          defaultVideoPublishOptions: VideoPublishOptions(
-            simulcast: args.simulcast,
-            videoCodec: args.preferredCodec,
-            backupVideoCodec: BackupVideoCodec(
-              enabled: args.enableBackupVideoCodec,
-            ),
-            videoEncoding: cameraEncoding,
-            screenShareEncoding: screenEncoding,
-          ),
-          encryption: e2eeOptions,
-        ),
-      );
-      // Create a Listener before connecting
-      final listener = room.createListener();
-
-      await room.prepareConnection(args.url, args.token);
-
-      // Try to connect to the room
-      // This will throw an Exception if it fails for any reason.
-      await room.connect(
-        args.url,
-        args.token,
-        connectOptions: ConnectOptions(autoSubscribe: args.autoSubscribe),
-        fastConnectOptions: FastConnectOptions(
-          microphone: TrackOption(track: _audioTrack),
-          camera: TrackOption(track: _videoTrack),
-        ),
-      );
-
-      if (!context.mounted) return;
-      await Navigator.push<void>(
-        context,
-        MaterialPageRoute(
-          builder: (_) => RoomPage(room, listener, fastConnection: true),
-        ),
-      );
-    } catch (error) {
-      print('Could not connect $error');
-      if (!context.mounted) return;
-      await context.showErrorDialog(error);
-    } finally {
-      setState(() {
-        _busy = false;
-      });
     }
+    try {
+      await videoTrack?.stop();
+    } catch (e, st) {
+      log.LoggerService.error(
+        '释放本地视频轨道失败',
+        name: _tag,
+        error: e,
+        stackTrace: st,
+      );
+    }
+    log.LoggerService.info('本地 LiveKit Track 释放完成', name: _tag);
   }
 
   void _actionBack(BuildContext context) async {
+    log.LoggerService.info('返回: 停止本地轨道并退出 PreJoinPage', name: _tag);
+      log.LoggerService.info('返回: 停止本地轨道并退出 LocalDevCheckPage', name: _tag);
     await _setEnableVideo(false);
     await _setEnableAudio(false);
     if (!context.mounted) return;
@@ -500,27 +508,6 @@ class _PreJoinPageState extends State<PreJoinPage> {
                       ),
                       menuItemStyleData: const MenuItemStyleData(height: 40),
                     ),
-                  ),
-                ),
-                ElevatedButton(
-                  onPressed: _busy ? null : () => _join(context),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (_busy)
-                        const Padding(
-                          padding: EdgeInsets.only(right: 10),
-                          child: SizedBox(
-                            height: 15,
-                            width: 15,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
-                            ),
-                          ),
-                        ),
-                      const Text('Join'),
-                    ],
                   ),
                 ),
               ],

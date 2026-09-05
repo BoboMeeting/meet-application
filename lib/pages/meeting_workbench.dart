@@ -2,10 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:livekit_client/livekit_client.dart';
 import 'package:livekit_example/models/room_models.dart';
+import 'package:livekit_example/pages/connection_check.dart';
 import 'package:livekit_example/pages/create_room_page.dart';
 import 'package:livekit_example/pages/login.dart';
-import 'package:livekit_example/pages/prejoin.dart';
+import 'package:livekit_example/pages/localdev_check.dart';
+import 'package:livekit_example/pages/room.dart';
 import 'package:livekit_example/services/auth_service.dart';
 import 'package:livekit_example/services/logger_service.dart' as log;
 import 'package:livekit_example/services/room_service.dart';
@@ -72,9 +75,8 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
     }
   }
 
-  List<RoomSummary> get _filtered => _showHistory
-      ? _rooms.where((r) => r.isHistory).toList()
-      : _rooms.where((r) => !r.isHistory).toList();
+  List<RoomSummary> get _filtered =>
+      _showHistory ? _rooms.where((r) => r.isHistory).toList() : _rooms.where((r) => !r.isHistory).toList();
 
   Future<void> _openCreatePage() async {
     final created = await Navigator.of(context).push<RoomSummary>(
@@ -91,8 +93,7 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
       name: _tag,
     );
     // 未开始的会议二次确认
-    if (room.status == RoomStatus.scheduled ||
-        (room.status == RoomStatus.open && !room.isInProgress)) {
+    if (room.status == RoomStatus.scheduled || (room.status == RoomStatus.open && !room.isInProgress)) {
       final confirmed = await _confirm(
         title: '会议尚未开始',
         message: '会议尚未开始，是否现在进入？',
@@ -118,8 +119,7 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
       // 入会第一步：调管理平台 → 获取调度服务地址 + RoomTicket
       final nickname = AuthService.instance.user?.nickname;
       log.LoggerService.info('[入会UI] Step1 → 请求管理平台 roomId=${room.id} nickname=$nickname', name: _tag);
-      final joinStep1 = await RoomService.instance
-          .joinRoom(room.id, nickname: nickname);
+      final joinStep1 = await RoomService.instance.joinRoom(room.id, nickname: nickname);
 
       // 入会第二步：调调度服务 → 用 JWT + Ticket 换取 LiveKit 参数
       log.LoggerService.info(
@@ -131,23 +131,102 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
         roomTicket: joinStep1.roomTicket,
       );
 
-      // 跳转到 prejoin 页面，携带 liveKit URL 与 Token
       if (!mounted) return;
       totalSw.stop();
       log.LoggerService.info(
-        '[入会UI] 两步骤完成，跳转 PreJoinPage  total=${totalSw.elapsedMilliseconds}ms  liveKitUrl=${lkParams.liveKitUrl}',
+        '[入会UI] 两步骤完成 total=${totalSw.elapsedMilliseconds}ms  liveKitUrl=${lkParams.liveKitUrl}',
         name: _tag,
       );
-      await Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => PreJoinPage(
-            args: JoinArgs(
-              url: lkParams.liveKitUrl,
-              token: lkParams.liveKitToken,
+
+      // 显示"连接中"loading，防止用户重复操作
+      unawaited(showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const _JoiningDialog(),
+      ));
+
+
+      Room? lkRoom;
+      EventsListener<RoomEvent>? listener;
+      try {
+        log.LoggerService.info('[入会UI] 开始创建 Room 并连接 LiveKit', name: _tag);
+        const cameraEncoding = VideoEncoding(
+          maxBitrate: 5 * 1000 * 1000,
+          maxFramerate: 30,
+        );
+        const screenEncoding = VideoEncoding(
+          maxBitrate: 3 * 1000 * 1000,
+          maxFramerate: 15,
+        );
+
+        lkRoom = Room(
+          roomOptions: const RoomOptions(
+            adaptiveStream: true,
+            dynacast: true,
+            defaultAudioPublishOptions: AudioPublishOptions(
+              name: 'custom_audio_track_name',
+            ),
+            defaultCameraCaptureOptions: CameraCaptureOptions(
+              maxFrameRate: 30,
+              params: VideoParameters(dimensions: VideoDimensions(1280, 720)),
+            ),
+            defaultScreenShareCaptureOptions: ScreenShareCaptureOptions(
+              useiOSBroadcastExtension: true,
+              params: VideoParameters(
+                dimensions: VideoDimensionsPresets.h1080_169,
+              ),
+            ),
+            defaultVideoPublishOptions: VideoPublishOptions(
+              simulcast: true,
+              videoCodec: 'VP8',
+              backupVideoCodec: BackupVideoCodec(enabled: true),
+              videoEncoding: cameraEncoding,
+              screenShareEncoding: screenEncoding,
             ),
           ),
+        );
+        listener = lkRoom.createListener();
+
+        await lkRoom.prepareConnection(lkParams.liveKitUrl, lkParams.liveKitToken);
+        log.LoggerService.info('[入会UI] prepareConnection 完成', name: _tag);
+
+        await lkRoom.connect(
+          lkParams.liveKitUrl,
+          lkParams.liveKitToken,
+          connectOptions: const ConnectOptions(autoSubscribe: true),
+        );
+        log.LoggerService.info(
+          '[入会UI] room.connect 成功 roomName=${lkRoom.name} localParticipant=${lkRoom.localParticipant?.identity}',
+          name: _tag,
+        );
+      } catch (e, st) {
+        if (mounted) Navigator.of(context).pop(); // 关闭 loading
+        log.LoggerService.error(
+          '[入会UI] LiveKit 连接失败',
+          name: _tag,
+          error: e,
+          stackTrace: st,
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('连接会议失败：$e')));
+        }
+        return;
+      }
+
+      // 连接成功：关闭 loading，跳转 RoomPage（fastConnection=false，由 RoomPage 弹窗发布音视频）
+      if (!mounted) {
+        unawaited(lkRoom.disconnect());
+        return;
+      }
+      Navigator.of(context).pop(); // 关闭 loading dialog
+
+      log.LoggerService.info('[入会UI] 跳转 RoomPage (fastConnection=false)', name: _tag);
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => RoomPage(lkRoom!, listener!, fastConnection: false),
         ),
       );
+      log.LoggerService.info('[入会UI] RoomPage 已返回', name: _tag);
     } on RoomApiException catch (e) {
       totalSw.stop();
       log.LoggerService.warning(
@@ -155,8 +234,7 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
         name: _tag,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(e.message)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e, st) {
       totalSw.stop();
       log.LoggerService.error(
@@ -166,8 +244,7 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
         stackTrace: st,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('入会失败：$e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('入会失败：$e')));
     }
   }
 
@@ -200,12 +277,9 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
       );
       await _loadRooms();
     } on RoomApiException catch (e) {
-      log.LoggerService.warning(
-          '取消会议失败(业务) roomId=${room.id} msg=${e.message}',
-          name: _tag);
+      log.LoggerService.warning('取消会议失败(业务) roomId=${room.id} msg=${e.message}', name: _tag);
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(e.message)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e, st) {
       log.LoggerService.error(
         '取消会议异常  roomId=${room.id}',
@@ -214,8 +288,7 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
         stackTrace: st,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('取消失败：$e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('取消失败：$e')));
     }
   }
 
@@ -258,10 +331,47 @@ class _MeetingWorkbenchPageState extends State<MeetingWorkbenchPage> {
     );
   }
 
+  Future<void> _openDeviceSettings() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => const LocalDevCheckPage(),
+      ),
+    );
+  }
+
+  Future<void> _openConnectionCheck() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => const ConnectionCheckPage(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(
           title: const Text('会议工作台'),
+          leading: PopupMenuButton<String>(
+            tooltip: '设置',
+            onSelected: (value) {
+              if (value == 'test_local_device') {
+                unawaited(_openDeviceSettings());
+              } else if (value == 'livekit_connection_test') {
+                unawaited(_openConnectionCheck());
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'test_local_device',
+                child: Text('测试本地设备'),
+              ),
+              PopupMenuItem(
+                value: 'livekit_connection_test',
+                child: Text('livekit连接测试'),
+              ),
+            ],
+            icon: const Icon(Icons.settings_outlined),
+          ),
           backgroundColor: LKColors.neutral800,
           shape: const Border(
             bottom: BorderSide(color: LKColors.border),
@@ -383,8 +493,7 @@ class _InProgressBanner extends StatelessWidget {
             Expanded(
               child: Text(
                 '${room.title} 正在进行中',
-                style: const TextStyle(
-                    color: LKColors.emerald400, fontWeight: FontWeight.w600),
+                style: const TextStyle(color: LKColors.emerald400, fontWeight: FontWeight.w600),
               ),
             ),
             TextButton(
@@ -405,8 +514,7 @@ class _BreathingDot extends StatefulWidget {
   State<_BreathingDot> createState() => _BreathingDotState();
 }
 
-class _BreathingDotState extends State<_BreathingDot>
-    with SingleTickerProviderStateMixin {
+class _BreathingDotState extends State<_BreathingDot> with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 1200),
@@ -476,12 +584,10 @@ class _RoomCard extends StatelessWidget {
                   Row(
                     children: [
                       Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(
                           color: badge.color.withValues(alpha: 0.15),
-                          border: Border.all(
-                              color: badge.color.withValues(alpha: 0.6)),
+                          border: Border.all(color: badge.color.withValues(alpha: 0.6)),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Row(
@@ -490,13 +596,11 @@ class _RoomCard extends StatelessWidget {
                             if (room.isInProgress)
                               const Padding(
                                 padding: EdgeInsets.only(right: 4),
-                                child: _BreathingDot(
-                                    color: LKColors.emerald400),
+                                child: _BreathingDot(color: LKColors.emerald400),
                               ),
                             Text(
                               badge.label,
-                              style: TextStyle(
-                                  color: badge.color, fontSize: 12),
+                              style: TextStyle(color: badge.color, fontSize: 12),
                             ),
                           ],
                         ),
@@ -504,8 +608,7 @@ class _RoomCard extends StatelessWidget {
                       const Spacer(),
                       Text(
                         '${dateFmt.format(room.startTime)} ${timeFmt.format(room.startTime)} - ${timeFmt.format(room.endTime)}',
-                        style: const TextStyle(
-                            color: LKColors.textSecondary, fontSize: 13),
+                        style: const TextStyle(color: LKColors.textSecondary, fontSize: 13),
                       ),
                     ],
                   ),
@@ -514,8 +617,7 @@ class _RoomCard extends StatelessWidget {
                     room.title,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 17, fontWeight: FontWeight.w700),
+                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 6),
                   Row(
@@ -527,8 +629,7 @@ class _RoomCard extends StatelessWidget {
                           room.id,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              color: LKColors.textSecondary, fontSize: 12),
+                          style: const TextStyle(color: LKColors.textSecondary, fontSize: 12),
                         ),
                       ),
                     ],
@@ -539,20 +640,16 @@ class _RoomCard extends StatelessWidget {
                       Icon(
                         isHost ? Icons.star : Icons.person,
                         size: 14,
-                        color: isHost
-                            ? LKColors.lkGreen
-                            : LKColors.textSecondary,
+                        color: isHost ? LKColors.lkGreen : LKColors.textSecondary,
                       ),
                       const SizedBox(width: 4),
                       Text(
                         '${room.hostNickname}${isHost ? '（我）' : ''}',
-                        style: const TextStyle(
-                            color: LKColors.textSecondary, fontSize: 13),
+                        style: const TextStyle(color: LKColors.textSecondary, fontSize: 13),
                       ),
                       if (room.locked) ...[
                         const SizedBox(width: 12),
-                        const Icon(Icons.lock,
-                            size: 13, color: LKColors.destructiveDark),
+                        const Icon(Icons.lock, size: 13, color: LKColors.destructiveDark),
                       ],
                     ],
                   ),
@@ -568,8 +665,7 @@ class _RoomCard extends StatelessWidget {
                 if (room.maxParticipants > 0)
                   Text(
                     '上限 ${room.maxParticipants} 人',
-                    style: const TextStyle(
-                        color: LKColors.textSecondary, fontSize: 12),
+                    style: const TextStyle(color: LKColors.textSecondary, fontSize: 12),
                   ),
                 const Spacer(),
                 // 仅主持人且会议未结束时可取消
@@ -622,8 +718,7 @@ class _CancelButton extends StatelessWidget {
         label: const Text('取消会议'),
         style: OutlinedButton.styleFrom(
           foregroundColor: LKColors.destructiveDark,
-          side: BorderSide(
-              color: LKColors.destructiveDark.withValues(alpha: 0.6)),
+          side: BorderSide(color: LKColors.destructiveDark.withValues(alpha: 0.6)),
         ),
       );
 }
@@ -636,8 +731,7 @@ _StatusBadge _statusBadge(RoomSummary r, DateTime now) {
       if (r.isStartingSoon(now)) {
         return const _StatusBadge('即将开始', Colors.amber);
       }
-      return _StatusBadge(
-          r.statusStr.isEmpty ? '已预约' : r.statusStr, LKColors.lkAccentDark);
+      return _StatusBadge(r.statusStr.isEmpty ? '已预约' : r.statusStr, LKColors.lkAccentDark);
     case RoomStatus.open:
       if (r.isInProgress) {
         return const _StatusBadge('进行中', LKColors.emerald400);
@@ -645,8 +739,7 @@ _StatusBadge _statusBadge(RoomSummary r, DateTime now) {
       if (r.isStartingSoon(now)) {
         return const _StatusBadge('即将开始', Colors.amber);
       }
-      return _StatusBadge(
-          r.statusStr.isEmpty ? '待开始' : r.statusStr, LKColors.textSecondary);
+      return _StatusBadge(r.statusStr.isEmpty ? '待开始' : r.statusStr, LKColors.textSecondary);
     case RoomStatus.closed:
       return const _StatusBadge('会议已结束', LKColors.textSecondary);
     case RoomStatus.cancelled:
@@ -680,8 +773,7 @@ class _EmptyState extends StatelessWidget {
             const SizedBox(height: 16),
             Text(
               isHistory ? '暂无历史会议' : '今天没有安排，休息一下吧',
-              style: const TextStyle(
-                  color: LKColors.textSecondary, fontSize: 15),
+              style: const TextStyle(color: LKColors.textSecondary, fontSize: 15),
             ),
             if (!isHistory && onCreate != null) ...[
               const SizedBox(height: 20),
@@ -692,6 +784,29 @@ class _EmptyState extends StatelessWidget {
               ),
             ],
           ],
+        ),
+      );
+}
+
+/// 连接会议中的 loading 对话框。
+class _JoiningDialog extends StatelessWidget {
+  const _JoiningDialog();
+
+  @override
+  Widget build(BuildContext context) => const PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Row(
+            children: [
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              ),
+              SizedBox(width: 20),
+              Text('正在连接会议...'),
+            ],
+          ),
         ),
       );
 }
@@ -707,8 +822,7 @@ class _ErrorView extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline,
-                size: 56, color: LKColors.destructiveDark),
+            const Icon(Icons.error_outline, size: 56, color: LKColors.destructiveDark),
             const SizedBox(height: 12),
             Text(message, textAlign: TextAlign.center),
             const SizedBox(height: 16),

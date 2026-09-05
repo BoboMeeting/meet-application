@@ -6,14 +6,7 @@ import 'package:livekit_client/livekit_client.dart';
 
 class ConnectionCheckPage extends StatefulWidget {
   //
-  const ConnectionCheckPage({
-    required this.url,
-    required this.token,
-    super.key,
-  });
-
-  final String url;
-  final String token;
+  const ConnectionCheckPage({super.key});
 
   @override
   State<StatefulWidget> createState() => _ConnectionCheckPageState();
@@ -21,6 +14,8 @@ class ConnectionCheckPage extends StatefulWidget {
 
 class _ConnectionCheckPageState extends State<ConnectionCheckPage> {
   //
+  final _urlController = TextEditingController();
+  final _tokenController = TextEditingController();
   ConnectionCheck? _connectionCheck;
   EventsListener<ConnectionCheckEvent>? _listener;
   final Map<int, CheckInfo> _results = {};
@@ -28,6 +23,8 @@ class _ConnectionCheckPageState extends State<ConnectionCheckPage> {
 
   @override
   void dispose() {
+    _urlController.dispose();
+    _tokenController.dispose();
     unawaited(_cleanUp());
     super.dispose();
   }
@@ -40,9 +37,19 @@ class _ConnectionCheckPageState extends State<ConnectionCheckPage> {
   }
 
   Future<void> _runChecks() async {
+    if (_urlController.text.trim().isEmpty || _tokenController.text.trim().isEmpty) {
+      await _openSettings();
+      if (_urlController.text.trim().isEmpty || _tokenController.text.trim().isEmpty) {
+        return;
+      }
+    }
+
     await _cleanUp();
 
-    final connectionCheck = ConnectionCheck(widget.url, widget.token);
+    final connectionCheck = ConnectionCheck(
+      _urlController.text.trim(),
+      _tokenController.text.trim(),
+    );
     final listener = connectionCheck.createListener();
     listener.on<ConnectionCheckUpdateEvent>((event) {
       if (!mounted) return;
@@ -85,6 +92,56 @@ class _ConnectionCheckPageState extends State<ConnectionCheckPage> {
     }
   }
 
+  Future<void> _openSettings() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('连接检查设置'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: _urlController,
+                autofocus: true,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'URL',
+                  hintText: 'wss://your-livekit-server',
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _tokenController,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'TOKEN',
+                  hintText: 'LiveKit access token',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              if (_urlController.text.trim().isEmpty || _tokenController.text.trim().isEmpty) {
+                return;
+              }
+              Navigator.of(context).pop();
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _iconFor(CheckStatus status) {
     switch (status) {
       case CheckStatus.idle:
@@ -124,6 +181,13 @@ class _ConnectionCheckPageState extends State<ConnectionCheckPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Connection Check'),
+        actions: [
+          IconButton(
+            onPressed: _running ? null : _openSettings,
+            tooltip: '设置 URL 和 TOKEN',
+            icon: const Icon(Icons.tune),
+          ),
+        ],
       ),
       body: Column(
         children: [

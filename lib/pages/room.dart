@@ -6,12 +6,15 @@ import 'package:flutter/services.dart';
 import 'package:livekit_client/livekit_client.dart';
 
 import '../exts.dart';
+import '../services/logger_service.dart' as log;
 import '../theme.dart';
 import '../utils.dart';
 import '../widgets/controls.dart';
 import '../widgets/messages_panel.dart';
 import '../widgets/participant.dart';
 import '../widgets/participant_info.dart';
+
+const _tag = 'Room';
 
 class RoomPage extends StatefulWidget {
   final Room room;
@@ -49,12 +52,19 @@ class _RoomPageState extends State<RoomPage> {
   @override
   void initState() {
     super.initState();
+    log.LoggerService.info(
+      'RoomPage initState 开始, fastConnection=$fastConnection, '
+      'roomName=${widget.room.name}, '
+      'localParticipant=${widget.room.localParticipant?.identity}',
+      name: _tag,
+    );
     _connectedAt = DateTime.now();
     _headerTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
 
     if (lkPlatformIs(PlatformType.android)) {
+      log.LoggerService.debug('Android: 启用 inCall 标志', name: _tag);
       unawaited(enableInCallFlags());
     }
 
@@ -62,8 +72,14 @@ class _RoomPageState extends State<RoomPage> {
     widget.room.addListener(_onRoomDidUpdate);
     _setUpListeners();
     _sortParticipants();
+    log.LoggerService.debug(
+      'initState: listener 已注册, 参与者排序完成, '
+      'participantTracks=${participantTracks.length}',
+      name: _tag,
+    );
     WidgetsBindingCompatible.instance?.addPostFrameCallback((_) {
       if (!fastConnection) {
+        log.LoggerService.info('非快速连接, 延迟调用 _askPublish', name: _tag);
         _askPublish();
       }
     });
@@ -74,16 +90,19 @@ class _RoomPageState extends State<RoomPage> {
 
     if (lkPlatformIsDesktop()) {
       onWindowShouldClose = () async {
+        log.LoggerService.info('桌面端: 窗口关闭请求, 开始断开连接', name: _tag);
         unawaited(widget.room.disconnect());
         await _listener.waitFor<RoomDisconnectedEvent>(
           duration: const Duration(seconds: 5),
         );
       };
     }
+    log.LoggerService.info('RoomPage initState 完成', name: _tag);
   }
 
   @override
   void dispose() {
+    log.LoggerService.info('RoomPage dispose 开始', name: _tag);
     widget.room.removeListener(_onRoomDidUpdate);
     _headerTimer?.cancel();
     _messageCtrl.dispose();
@@ -93,27 +112,59 @@ class _RoomPageState extends State<RoomPage> {
       unawaited(disableInCallFlags());
     }
     super.dispose();
+    log.LoggerService.info('RoomPage dispose 完成', name: _tag);
   }
 
   Future<void> _disposeRoomAsync() async {
-    await _listener.dispose();
-    await widget.room.dispose();
+    log.LoggerService.debug('开始销毁 listener 和 room', name: _tag);
+    try {
+      await _listener.dispose();
+      log.LoggerService.debug('listener 销毁完成', name: _tag);
+    } catch (e, st) {
+      log.LoggerService.error(
+        'listener 销毁异常', name: _tag, error: e, stackTrace: st,
+      );
+    }
+    try {
+      await widget.room.dispose();
+      log.LoggerService.debug('room 销毁完成', name: _tag);
+    } catch (e, st) {
+      log.LoggerService.error(
+        'room 销毁异常', name: _tag, error: e, stackTrace: st,
+      );
+    }
   }
 
   static const platform = MethodChannel('livekit_incall');
 
   Future<void> enableInCallFlags() async {
-    await platform.invokeMethod('enableInCall');
+    try {
+      await platform.invokeMethod('enableInCall');
+      log.LoggerService.debug('enableInCall 调用成功', name: _tag);
+    } catch (e, st) {
+      log.LoggerService.error(
+        'enableInCall 调用失败', name: _tag, error: e, stackTrace: st,
+      );
+    }
   }
 
   Future<void> disableInCallFlags() async {
-    await platform.invokeMethod('disableInCall');
+    try {
+      await platform.invokeMethod('disableInCall');
+      log.LoggerService.debug('disableInCall 调用成功', name: _tag);
+    } catch (e, st) {
+      log.LoggerService.error(
+        'disableInCall 调用失败', name: _tag, error: e, stackTrace: st,
+      );
+    }
   }
 
   /// for more information, see [event types](https://docs.livekit.io/client/events/#events)
-  void _setUpListeners() => _listener
+  void _setUpListeners() {
+    log.LoggerService.info('注册 Room 事件监听器', name: _tag);
+    _listener
     ..on<RoomConnectedEvent>((event) {
-      print('Room connected: ${event.room.name}');
+      log.LoggerService.info('Room 已连接: ${event.room.name}', name: _tag);
       if (!mounted) return;
       setState(() {
         _connectedAt = DateTime.now();
@@ -122,7 +173,7 @@ class _RoomPageState extends State<RoomPage> {
       });
     })
     ..on<RoomReconnectingEvent>((event) {
-      print('Room reconnecting: $event');
+      log.LoggerService.warning('Room 重连中: $event', name: _tag);
       if (!mounted) return;
       setState(() {
         _isReconnecting = true;
@@ -130,7 +181,7 @@ class _RoomPageState extends State<RoomPage> {
       });
     })
     ..on<RoomResumingEvent>((event) {
-      print('Room resuming: $event');
+      log.LoggerService.warning('Room 恢复中: $event', name: _tag);
       if (!mounted) return;
       setState(() {
         _isReconnecting = true;
@@ -138,7 +189,7 @@ class _RoomPageState extends State<RoomPage> {
       });
     })
     ..on<RoomReconnectedEvent>((event) {
-      print('Room reconnected: $event');
+      log.LoggerService.info('Room 重连成功: $event', name: _tag);
       if (!mounted) return;
       setState(() {
         _isReconnecting = false;
@@ -146,9 +197,9 @@ class _RoomPageState extends State<RoomPage> {
       });
     })
     ..on<RoomDisconnectedEvent>((event) async {
-      if (event.reason != null) {
-        print('Room disconnected: reason => ${event.reason}');
-      }
+      log.LoggerService.info(
+        'Room 已断开, reason=${event.reason}', name: _tag,
+      );
       WidgetsBindingCompatible.instance?.addPostFrameCallback((timeStamp) {
         if (!mounted) return;
         Navigator.popUntil(context, (route) => route.isFirst);
@@ -158,14 +209,18 @@ class _RoomPageState extends State<RoomPage> {
       _sortParticipants();
     })
     ..on<RoomRecordingStatusChanged>((event) {
+      log.LoggerService.info(
+        '录制状态变更: activeRecording=${event.activeRecording}', name: _tag,
+      );
       unawaited(
         context.showRecordingStatusChangedDialog(event.activeRecording),
       );
     })
     ..on<RoomAttemptReconnectEvent>((event) {
-      print(
-        'Attempting to reconnect ${event.attempt}/${event.maxAttemptsRetry}, '
-        '(${event.nextRetryDelaysInMs}ms delay until next attempt)',
+      log.LoggerService.warning(
+        '重连尝试 ${event.attempt}/${event.maxAttemptsRetry}, '
+        '下次延迟 ${event.nextRetryDelaysInMs}ms',
+        name: _tag,
       );
       if (!mounted) return;
       setState(() {
@@ -174,53 +229,82 @@ class _RoomPageState extends State<RoomPage> {
       });
     })
     ..on<LocalTrackSubscribedEvent>((event) {
-      print('Local track subscribed: ${event.trackSid}');
+      log.LoggerService.info('本地轨道已订阅: ${event.trackSid}', name: _tag);
     })
-    ..on<LocalTrackPublishedEvent>((_) => _sortParticipants())
-    ..on<LocalTrackUnpublishedEvent>((_) => _sortParticipants())
-    ..on<TrackSubscribedEvent>((_) => _sortParticipants())
-    ..on<TrackUnsubscribedEvent>((_) => _sortParticipants())
+    ..on<LocalTrackPublishedEvent>((event) {
+      log.LoggerService.info('本地轨道已发布', name: _tag);
+      _sortParticipants();
+    })
+    ..on<LocalTrackUnpublishedEvent>((event) {
+      log.LoggerService.info('本地轨道已取消发布', name: _tag);
+      _sortParticipants();
+    })
+    ..on<TrackSubscribedEvent>((event) {
+      log.LoggerService.info('远端轨道已订阅', name: _tag);
+      _sortParticipants();
+    })
+    ..on<TrackUnsubscribedEvent>((event) {
+      log.LoggerService.info('远端轨道已取消订阅', name: _tag);
+      _sortParticipants();
+    })
     ..on<TrackE2EEStateEvent>(_onE2EEStateEvent)
     ..on<ParticipantNameUpdatedEvent>((event) {
-      print(
-        'Participant name updated: ${event.participant.identity}, name => ${event.name}',
+      log.LoggerService.info(
+        '参与者名称更新: ${event.participant.identity} => ${event.name}',
+        name: _tag,
       );
       _sortParticipants();
     })
     ..on<ParticipantMetadataUpdatedEvent>((event) {
-      print(
-        'Participant metadata updated: ${event.participant.identity}, metadata => ${event.metadata}',
+      log.LoggerService.debug(
+        '参与者元数据更新: ${event.participant.identity}, metadata=${event.metadata}',
+        name: _tag,
       );
     })
     ..on<RoomMetadataChangedEvent>((event) {
-      print('Room metadata changed: ${event.metadata}');
+      log.LoggerService.debug('Room 元数据变更: ${event.metadata}', name: _tag);
     })
     ..on<DataReceivedEvent>(_handleDataReceived)
     ..on<AudioPlaybackStatusChanged>((event) async {
       if (!widget.room.canPlaybackAudio) {
-        print('Audio playback failed for iOS Safari ..........');
+        log.LoggerService.warning('音频无法自动播放, 弹窗请求用户手动允许', name: _tag);
         final yesno = await context.showPlayAudioManuallyDialog();
         if (yesno == true) {
           await widget.room.startAudio();
+          log.LoggerService.info('用户已允许音频播放, startAudio 完成', name: _tag);
         }
       }
     });
+    log.LoggerService.info('Room 事件监听器注册完成', name: _tag);
+  }
 
   void _askPublish() async {
+    log.LoggerService.info('_askPublish: 弹窗请求发布音视频', name: _tag);
     final result = await context.showPublishDialog();
     if (!mounted) return;
-    if (result != true) return;
+    if (result != true) {
+      log.LoggerService.info('_askPublish: 用户拒绝了发布', name: _tag);
+      return;
+    }
+    log.LoggerService.info('_askPublish: 用户同意, 开始发布摄像头', name: _tag);
     try {
       await widget.room.localParticipant?.setCameraEnabled(true);
-    } catch (error) {
-      print('could not publish video: $error');
+      log.LoggerService.info('摄像头发布成功', name: _tag);
+    } catch (error, st) {
+      log.LoggerService.error(
+        '摄像头发布失败', name: _tag, error: error, stackTrace: st,
+      );
       if (!mounted) return;
       await context.showErrorDialog(error);
     }
+    log.LoggerService.info('_askPublish: 开始发布麦克风', name: _tag);
     try {
       await widget.room.localParticipant?.setMicrophoneEnabled(true);
-    } catch (error) {
-      print('could not publish audio: $error');
+      log.LoggerService.info('麦克风发布成功', name: _tag);
+    } catch (error, st) {
+      log.LoggerService.error(
+        '麦克风发布失败', name: _tag, error: error, stackTrace: st,
+      );
       if (!mounted) return;
       await context.showErrorDialog(error);
     }
@@ -231,7 +315,7 @@ class _RoomPageState extends State<RoomPage> {
   }
 
   void _onE2EEStateEvent(TrackE2EEStateEvent e2eeState) {
-    print('e2ee state: $e2eeState');
+    log.LoggerService.debug('e2ee state: $e2eeState', name: _tag);
   }
 
   void _handleDataReceived(DataReceivedEvent event) {
@@ -239,7 +323,7 @@ class _RoomPageState extends State<RoomPage> {
     try {
       decoded = utf8.decode(event.data);
     } catch (error) {
-      print('Failed to decode data message: $error');
+      log.LoggerService.warning('数据消息解码失败: $error', name: _tag);
     }
 
     ExampleRoomMessage message;
@@ -248,7 +332,7 @@ class _RoomPageState extends State<RoomPage> {
         final payload = jsonDecode(decoded) as Map<String, dynamic>;
         message = ExampleRoomMessage.fromJson(payload);
       } catch (error) {
-        print('Failed to decode room message: $error');
+        log.LoggerService.warning('聊天消息 JSON 解析失败: $error', name: _tag);
         message = ExampleRoomMessage.system(decoded);
       }
     } else {
@@ -278,14 +362,18 @@ class _RoomPageState extends State<RoomPage> {
       _messages.add(message);
     });
 
+    log.LoggerService.debug('发送聊天消息: $text', name: _tag);
     try {
       await participant.publishData(
         utf8.encode(jsonEncode(message.toJson())),
         reliable: true,
         topic: _chatTopic,
       );
-    } catch (error) {
-      print('Failed to send room message: $error');
+      log.LoggerService.debug('聊天消息发送成功', name: _tag);
+    } catch (error, st) {
+      log.LoggerService.error(
+        '聊天消息发送失败', name: _tag, error: error, stackTrace: st,
+      );
       if (!mounted) return;
       await context.showErrorDialog(error);
     }
@@ -358,6 +446,12 @@ class _RoomPageState extends State<RoomPage> {
     final nextTracks = [...screenTracks, ...userMediaTracks];
     final focusedTrackStillVisible =
         _focusedTrackId == null || nextTracks.any((track) => _trackId(track) == _focusedTrackId);
+
+    log.LoggerService.debug(
+      '排序参与者: total=${nextTracks.length}, screen=${screenTracks.length}, '
+      'userMedia=${userMediaTracks.length}, remote=${widget.room.remoteParticipants.length}',
+      name: _tag,
+    );
 
     if (!mounted) return;
     setState(() {
